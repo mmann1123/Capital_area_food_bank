@@ -70,7 +70,7 @@ for i in drive_hours.columns:
 
 gdf = drive_hours[drive_hours["Weekend_AM_y"] == 1]
 # keep only polygon and multipolygon geometries
-gdf = gdf.explode()
+# gdf = gdf.explode()
 gdf = gdf[gdf["geometry"].geom_type.isin(["Polygon", "MultiPolygon"])]
 gdf.to_crs("epsg:32618", inplace=True)
 gdf.head()
@@ -211,96 +211,148 @@ amap = dissolved_unioned.explore(
 amap.save("./data/Weekend_AM_y.html")
 # %%https://github.com/geopandas/geopandas/issues/2792
 import shapely
+import numpy as np
 
 
-merged = []
+def my_union(df1, df2):
+    merged = []
 
-tree = shapely.STRtree(df2.geometry.values)
-left, right = tree.query(df1.geometry.values, predicate="intersects")
+    tree = shapely.STRtree(df2.geometry.values)
+    left, right = tree.query(df1.geometry.values, predicate="intersects")
 
-if len(left):
-    pairs = (
-        df1.take(left)
-        .join(pd.DataFrame({"index_right": right}, index=df1.index.values.take(left)))
-        .join(
+    if len(left):
+        # pairs = (
+        #     df1.take(left)
+        #     .join(pd.DataFrame({"index_right": right}, index=df1.index.values.take(left)))
+        #     .join(
+        #         df2.rename(columns={"geometry": "geom_right"}),
+        #         on="index_right",
+        #         rsuffix="_2",
+        #     )
+        # )
+        pairs = pd.concat(
+            [
+                df1.take(left),
+                (
+                    pd.DataFrame(
+                        {"index_right": right}, index=df1.index.values.take(left)
+                    )
+                ),
+            ],
+            axis=1,
+        ).join(
             df2.rename(columns={"geometry": "geom_right"}),
             on="index_right",
             rsuffix="_2",
         )
-    )
+        intersections = pairs.copy()
+        intersections["geometry"] = shapely.intersection(
+            intersections.geometry.values, intersections.geom_right.values
+        )
+        intersections = intersections.drop(columns=["index_right", "geom_right"])
+        merged.append(intersections)
 
-    intersections = pairs.copy()
-    intersections["geometry"] = shapely.intersection(
-        intersections.geometry.values, intersections.geom_right.values
-    )
-    intersections = intersections.drop(columns=["index_right", "geom_right"])
-    merged.append(intersections)
-
-    # aggregate areas in right by unique values of left, then use those to clip
-    # areas out of left
-    clip_left = gp.GeoDataFrame(
-        pairs.groupby(level=0).agg(
-            {
-                "geom_right": lambda g: shapely.union_all(g) if len(g) > 1 else g,
-                **{
-                    c: "first"
-                    for c in df1.columns
-                    if not c in ["index_right", "geom_right"]
-                },
-            }
-        ),
-        geometry="geometry",
-        crs=df1.crs,
-    )
-    clip_left["geometry"] = shapely.difference(
-        clip_left.geometry.values, clip_left.geom_right.values
-    )
-    clip_left = clip_left.drop(columns=["geom_right"])
-    merged.append(clip_left)
-
-    clip_right = (
-        gp.GeoDataFrame(
-            pairs.rename(columns={"geometry": "geom_left", "geom_right": "geometry"})
-            .groupby(by="index_right")
-            .agg(
+        # aggregate areas in right by unique values of left, then use those to clip
+        # areas out of left
+        s = gpd.GeoDataFrame(
+            pairs.groupby(level=0).agg(
                 {
-                    "geom_left": lambda g: shapely.union_all(g) if len(g) > 1 else g,
-                    "geometry": "first",
+                    "geom_right": lambda g: shapely.union_all(g) if len(g) > 1 else g,
+                    **{
+                        c: "first"
+                        for c in df1.columns
+                        if not c in ["index_right", "geom_right"]
+                    },
                 }
             ),
             geometry="geometry",
-            crs=df2.crs,
+            crs=df1.crs,
         )
-        .join(df2.drop(columns=["geometry"]))
-        .rename(
-            columns={
-                c: f"{c}_2" if c in df1.columns and c != "geometry" else c
-                for c in df2.columns
-            }
+        clip_left["geometry"] = shapely.difference(
+            clip_left.geometry.values, clip_left.geom_right.values
         )
+        clip_left = clip_left.drop(columns=["geom_right"])
+        merged.append(clip_left)
+
+        clip_right = (
+            gpd.GeoDataFrame(
+                pairs.rename(
+                    columns={"geometry": "geom_left", "geom_right": "geometry"}
+                )
+                .groupby(by="index_right")
+                .agg(
+                    {
+                        "geom_left": lambda g: (
+                            shapely.union_all(g) if len(g) > 1 else g
+                        ),
+                        "geometry": "first",
+                    }
+                ),
+                geometry="geometry",
+                crs=df2.crs,
+            )
+            .join(df2.drop(columns=["geometry"]))
+            .rename(
+                columns={
+                    c: f"{c}_2" if c in df1.columns and c != "geometry" else c
+                    for c in df2.columns
+                }
+            )
+        )
+        clip_right["geometry"] = shapely.difference(
+            clip_right.geometry.values, clip_right.geom_left.values
+        )
+        clip_right = clip_right.drop(columns=["geom_left"])
+        merged.append(clip_right)
+
+    # add any from left or right data frames that did not intersect
+    diff_left = df1.take(np.setdiff1d(np.arange(len(df1)), left))
+    merged.append(diff_left)
+
+    diff_right = df2.take(np.setdiff1d(np.arange(len(df2)), right)).rename(
+        columns={
+            c: f"{c}_2" if c in df1.columns and c != "geometry" else c
+            for c in df2.columns
+        }
     )
-    clip_right["geometry"] = shapely.difference(
-        clip_right.geometry.values, clip_right.geom_left.values
+    merged.append(diff_right)
+
+    # merge all data frames
+    merged = pd.concat(merged, ignore_index=True)
+    return merged
+    # # Create a list of all columns that start with "AgencyRef1_"
+    # agency_ref_columns_dfinter = [
+    #     col for col in merged.columns if col.startswith("AgencyRef1_")
+    # ]
+
+    # # Step 1: Combine AgencyRef1_1 and AgencyRef1_2 into a single column AgencyRef1
+    # # Handle NaN values to avoid 'nan' in the result. Only concatenate non-NaN values.
+    # merged["AgencyRef1"] = merged.apply(
+    #     lambda row: ",".join(
+    #         filter(pd.notnull, [row[col] for col in agency_ref_columns_dfinter])
+    #     ),
+    #     axis=1,
+    # )
+    # merged = merged.drop(columns=agency_ref_columns_dfinter)
+
+    # # push geometry column to the end
+    # merged = merged.reindex(
+    #     columns=[c for c in merged.columns if c != "geometry"] + ["geometry"]
+    # )
+    # return merged
+
+
+# %%
+for index, row in gdf.iterrows():
+    print("INDEX:", index)
+    # Assuming gdf.geometry.name is correctly pointing to the geometry column.
+    row_df = pd.DataFrame(row).transpose()  # Transpose to get the correct shape
+    row_gdf = gpd.GeoDataFrame(
+        row_df[["AgencyRef1", "geometry"]], geometry=row_df.geometry.name, crs=gdf.crs
     )
-    clip_right = clip_right.drop(columns=["geom_left"])
-    merged.append(clip_right)
+    if index == gdf.index[0]:
+        unioned = row_gdf.copy()
+    else:
+        unioned = my_union(unioned, row_gdf)  # Union the GeoDataFrames
 
-
-# add any from left or right data frames that did not intersect
-diff_left = df1.take(np.setdiff1d(np.arange(len(df1)), left))
-merged.append(diff_left)
-
-diff_right = df2.take(np.setdiff1d(np.arange(len(df2)), right)).rename(
-    columns={
-        c: f"{c}_2" if c in df1.columns and c != "geometry" else c for c in df2.columns
-    }
-)
-merged.append(diff_right)
-
-# merge all data frames
-merged = pd.concat(merged, ignore_index=True)
-
-# push geometry column to the end
-merged = merged.reindex(
-    columns=[c for c in merged.columns if c != "geometry"] + ["geometry"]
-)
+# %%
