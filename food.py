@@ -1,3 +1,5 @@
+# %% os_prog_v2 environment
+
 # %% [markdown]
 # The Capital Area Food Bank procures and distributes food to a partner network made up of hundreds of different organizations across the DMC (soup kitchens, community centers, faith-based organizations, etc). These partner organizations are unique from each other in how they serve clients. They operate under different models, have different levels of capacity, and make food available during different days, different times of day, and different frequencies in a given month. Capital Area Food Bank is trying to understand the level of access that clients have to food assistance network-wide, and where there are gaps in access or saturations/high concentrations of partner sites. This analysis of client access should ideally take into account the time it takes for a client to travel to any partner location, and the method of transportation (walking or public transportation in urban areas, driving in more suburban areas). For this exercise, we have provided an isochrone file that shows areas that are within a 15-minute drive of a CAFB partner location, since we believe clients should not need to travel farther than 15 minutes by car to access the help they need. In more urban areas, clients should be within a 15-minute walk or 20-minutes via public transportation. For simplicity, we have just provided the driving-time layer. We have also included the operating hours of our partners. If a client is within a 15-minute drive of a partner organization, but that organization is only open once a month at a time of day the client cannot attend, we do not equate that to adequate client access.
 # Objective Statement
@@ -11,12 +13,12 @@
 import geopandas as gpd
 
 drivepoly = gpd.read_file("./data/2023_CAFB_15_Minute_Drive_Areas.geojson")
-# drivepoly[0:25].to_file("./data/drivepoly_demo.geojson", driver='GeoJSON')
+
 print(drivepoly.shape)
 drivepoly.head()
 
 # %%
-drivepoly.explore(opacity=0.8, column="FacilityOID", stroke=False)
+drivepoly.explore(column="FacilityOID")
 
 # %%
 import pandas as pd
@@ -27,9 +29,13 @@ availability.head()
 
 # %%
 availability["AgencyRef1"].unique()
+# %%
+len(availability["AgencyRef1"].unique())
 
 # %%
 drivepoly["AgencyRef1"].unique()
+# %%
+len(drivepoly["AgencyRef1"].unique())
 
 # %%
 all(drivepoly.groupby("AgencyRef1").size() == 1)
@@ -46,6 +52,12 @@ drive_hours.head()
 # %%
 drive_hours.shape
 
+# %% count missing with weekday in column
+drive_hours["Weekend_AM_y"].isna().sum()
+# %%
+drive_hours["Weekend_PM_y"].isna().sum()
+
+
 # %%
 for i in drive_hours.columns:
     print(i)
@@ -55,30 +67,37 @@ for i in drive_hours.columns:
 
 # %%
 # union of polygons counting overlapping areas
-from shapely.ops import unary_union
 
 gdf = drive_hours[drive_hours["Weekend_AM_y"] == 1]
+# keep only polygon and multipolygon geometries
+gdf = gdf.explode()
+gdf = gdf[gdf["geometry"].geom_type.isin(["Polygon", "MultiPolygon"])]
+gdf.to_crs("epsg:32618", inplace=True)
 gdf.head()
 gdf.explore()
 
 
 # %%
-# drop all LINESTRING from the geodataframe
-gdf = gdf[gdf["geometry"].geom_type == "Polygon"]
-gdf.to_crs("epsg:32618", inplace=True)
+
+from shapely.errors import TopologicalError
+from shapely import errors as se
+from shapely.errors import ShapelyError  # This includes most Shapely-related errors
 
 
 def overlay_union(df1, df2):
     """
     Overlay Union operation used in overlay function
     """
-    dfinter = gpd.overlay(df1, df2, how="intersection", make_valid=True)
-    dfsym = gpd.overlay(
-        df1, df2, how="difference", make_valid=True
-    )  # _overlay_symmetric_diff(df1, df2)
+
+    dfinter = gpd.overlay(
+        df1,
+        df2,
+        how="intersection",
+        make_valid=True,
+    )
 
     # Create a list of all columns that start with "AgencyRef1_"
-    agency_ref_columns = [
+    agency_ref_columns_dfinter = [
         col for col in dfinter.columns if col.startswith("AgencyRef1_")
     ]
 
@@ -86,13 +105,49 @@ def overlay_union(df1, df2):
     # Handle NaN values to avoid 'nan' in the result. Only concatenate non-NaN values.
     dfinter["AgencyRef1"] = dfinter.apply(
         lambda row: ",".join(
-            filter(pd.notnull, [row[col] for col in agency_ref_columns])
+            filter(pd.notnull, [row[col] for col in agency_ref_columns_dfinter])
         ),
         axis=1,
     )
-    dfinter = dfinter.drop(columns=agency_ref_columns)
+    dfinter = dfinter.drop(columns=agency_ref_columns_dfinter)
+    try:
+        dfsym = gpd.overlay(
+            df1,
+            df2,
+            how="symmetric_difference",
+            make_valid=True,
+        )  # _overlay_symmetric_diff(df1, df2)
+        # same for dfsym
+        agency_ref_columns_dfsym = [
+            col for col in dfsym.columns if col.startswith("AgencyRef1_")
+        ]
+        dfsym["AgencyRef1"] = dfsym.apply(
+            lambda row: ",".join(
+                filter(pd.notnull, [row[col] for col in agency_ref_columns_dfsym])
+            ),
+            axis=1,
+        )
+        dfsym = dfsym.drop(columns=agency_ref_columns_dfsym)
+        # merge parts
+        dfunion = pd.concat([dfinter, dfsym], ignore_index=True, sort=False)
 
-    dfunion = pd.concat([dfinter, dfsym], ignore_index=True, sort=False)
+    except Exception as e:  # This will catch any exception, including GEOSException
+
+        print(f"Caught a topology exception {e} ")
+        dfsym1 = gpd.overlay(
+            df1,
+            df2,
+            how="difference",
+            make_valid=True,
+        )
+        dfsym2 = gpd.overlay(
+            df2,
+            df1,
+            how="difference",
+            make_valid=True,
+        )
+        dfunion = pd.concat([dfinter, dfsym1, dfsym2], ignore_index=True, sort=False)
+
     # keep geometry column last
     columns = list(dfunion.columns)
     columns.remove("geometry")
@@ -113,7 +168,7 @@ for index, row in gdf.iterrows():
     if index == gdf.index[0]:
         unioned = row_gdf.copy()
     else:
-        unioned = overlay_union(unioned, row_gdf)  #
+        unioned = overlay_union(unioned, row_gdf)  # Union the GeoDataFrames
 
 # %%
 unioned.explore()
