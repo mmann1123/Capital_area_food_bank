@@ -158,3 +158,15 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+data/.~lock.CAFB Client Access Description and Metadata.xlsx#
+data/2023_CAFB_15_Minute_Drive_Areas.geojson
+data/Agency Data.csv
+data/CAFB Client Access Data.zip
+data/CAFB Client Access Description and Metadata.xlsx
+data/drivepoly_demo.geojson
+data/unioned_Weekend_AM_y.cpg
+data/unioned_Weekend_AM_y.dbf
+data/unioned_Weekend_AM_y.prj
+data/unioned_Weekend_AM_y.shp
+data/unioned_Weekend_AM_y.shx
+data/Weekend_AM_y.html
