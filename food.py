@@ -110,43 +110,57 @@ def overlay_union(df1, df2):
         axis=1,
     )
     dfinter = dfinter.drop(columns=agency_ref_columns_dfinter)
-    try:
-        dfsym = gpd.overlay(
-            df1,
-            df2,
-            how="symmetric_difference",
-            make_valid=True,
-        )  # _overlay_symmetric_diff(df1, df2)
-        # same for dfsym
-        agency_ref_columns_dfsym = [
-            col for col in dfsym.columns if col.startswith("AgencyRef1_")
-        ]
-        dfsym["AgencyRef1"] = dfsym.apply(
-            lambda row: ",".join(
-                filter(pd.notnull, [row[col] for col in agency_ref_columns_dfsym])
-            ),
-            axis=1,
-        )
-        dfsym = dfsym.drop(columns=agency_ref_columns_dfsym)
-        # merge parts
-        dfunion = pd.concat([dfinter, dfsym], ignore_index=True, sort=False)
+    # try:
+    dfsym1 = gpd.overlay(
+        df1,
+        df2,
+        how="difference",
+        make_valid=True,
+    )
+    dfsym2 = gpd.overlay(
+        df2,
+        df1,
+        how="difference",
+        make_valid=True,
+    )
+    dfunion = pd.concat([dfinter, dfsym1, dfsym2], ignore_index=True, sort=False)
 
-    except Exception as e:  # This will catch any exception, including GEOSException
+    # dfsym = gpd.overlay(
+    #     df1,
+    #     df2,
+    #     how="symmetric_difference",
+    #     make_valid=True,
+    # )  # _overlay_symmetric_diff(df1, df2)
+    # # same for dfsym
+    # agency_ref_columns_dfsym = [
+    #     col for col in dfsym.columns if col.startswith("AgencyRef1_")
+    # ]
+    # dfsym["AgencyRef1"] = dfsym.apply(
+    #     lambda row: ",".join(
+    #         filter(pd.notnull, [row[col] for col in agency_ref_columns_dfsym])
+    #     ),
+    #     axis=1,
+    # )
+    # dfsym = dfsym.drop(columns=agency_ref_columns_dfsym)
+    # # merge parts
+    # dfunion = pd.concat([dfinter, dfsym], ignore_index=True, sort=False)
 
-        print(f"Caught a topology exception {e} ")
-        dfsym1 = gpd.overlay(
-            df1,
-            df2,
-            how="difference",
-            make_valid=True,
-        )
-        dfsym2 = gpd.overlay(
-            df2,
-            df1,
-            how="difference",
-            make_valid=True,
-        )
-        dfunion = pd.concat([dfinter, dfsym1, dfsym2], ignore_index=True, sort=False)
+    # except Exception as e:  # This will catch any exception, including GEOSException
+
+    # print(f"Caught a topology exception {e} ")
+    # dfsym1 = gpd.overlay(
+    #     df1,
+    #     df2,
+    #     how="difference",
+    #     make_valid=True,
+    # )
+    # dfsym2 = gpd.overlay(
+    #     df2,
+    #     df1,
+    #     how="difference",
+    #     make_valid=True,
+    # )
+    # dfunion = pd.concat([dfinter, dfsym1, dfsym2], ignore_index=True, sort=False)
 
     # keep geometry column last
     columns = list(dfunion.columns)
@@ -195,4 +209,98 @@ amap = dissolved_unioned.explore(
 # amap
 # %%
 amap.save("./data/Weekend_AM_y.html")
-# %%
+# %%https://github.com/geopandas/geopandas/issues/2792
+import shapely
+
+
+merged = []
+
+tree = shapely.STRtree(df2.geometry.values)
+left, right = tree.query(df1.geometry.values, predicate="intersects")
+
+if len(left):
+    pairs = (
+        df1.take(left)
+        .join(pd.DataFrame({"index_right": right}, index=df1.index.values.take(left)))
+        .join(
+            df2.rename(columns={"geometry": "geom_right"}),
+            on="index_right",
+            rsuffix="_2",
+        )
+    )
+
+    intersections = pairs.copy()
+    intersections["geometry"] = shapely.intersection(
+        intersections.geometry.values, intersections.geom_right.values
+    )
+    intersections = intersections.drop(columns=["index_right", "geom_right"])
+    merged.append(intersections)
+
+    # aggregate areas in right by unique values of left, then use those to clip
+    # areas out of left
+    clip_left = gp.GeoDataFrame(
+        pairs.groupby(level=0).agg(
+            {
+                "geom_right": lambda g: shapely.union_all(g) if len(g) > 1 else g,
+                **{
+                    c: "first"
+                    for c in df1.columns
+                    if not c in ["index_right", "geom_right"]
+                },
+            }
+        ),
+        geometry="geometry",
+        crs=df1.crs,
+    )
+    clip_left["geometry"] = shapely.difference(
+        clip_left.geometry.values, clip_left.geom_right.values
+    )
+    clip_left = clip_left.drop(columns=["geom_right"])
+    merged.append(clip_left)
+
+    clip_right = (
+        gp.GeoDataFrame(
+            pairs.rename(columns={"geometry": "geom_left", "geom_right": "geometry"})
+            .groupby(by="index_right")
+            .agg(
+                {
+                    "geom_left": lambda g: shapely.union_all(g) if len(g) > 1 else g,
+                    "geometry": "first",
+                }
+            ),
+            geometry="geometry",
+            crs=df2.crs,
+        )
+        .join(df2.drop(columns=["geometry"]))
+        .rename(
+            columns={
+                c: f"{c}_2" if c in df1.columns and c != "geometry" else c
+                for c in df2.columns
+            }
+        )
+    )
+    clip_right["geometry"] = shapely.difference(
+        clip_right.geometry.values, clip_right.geom_left.values
+    )
+    clip_right = clip_right.drop(columns=["geom_left"])
+    merged.append(clip_right)
+
+
+# add any from left or right data frames that did not intersect
+diff_left = df1.take(np.setdiff1d(np.arange(len(df1)), left))
+merged.append(diff_left)
+
+diff_right = df2.take(np.setdiff1d(np.arange(len(df2)), right)).rename(
+    columns={
+        c: f"{c}_2" if c in df1.columns and c != "geometry" else c for c in df2.columns
+    }
+)
+merged.append(diff_right)
+
+# merge all data frames
+merged = pd.concat(merged, ignore_index=True)
+
+# push geometry column to the end
+merged = merged.reindex(
+    columns=[c for c in merged.columns if c != "geometry"] + ["geometry"]
+)
