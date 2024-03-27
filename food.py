@@ -27,14 +27,11 @@ availability = pd.read_csv("./data/Agency Data.csv")
 print(availability.shape)
 availability.head()
 
-# %%
 availability["AgencyRef1"].unique()
-# %%
 len(availability["AgencyRef1"].unique())
 
-# %%
+
 drivepoly["AgencyRef1"].unique()
-# %%
 len(drivepoly["AgencyRef1"].unique())
 
 # %%
@@ -214,22 +211,34 @@ import shapely
 import numpy as np
 
 
+def clean_names(df):
+    # Create a list of all columns that start with "AgencyRef1_"
+    agency_ref_columns_dfinter = [
+        col for col in df.columns if col.startswith("AgencyRef1_")
+    ]
+
+    # Step 1: Combine AgencyRef1_1 and AgencyRef1_2 into a single column AgencyRef1
+    # Handle NaN values to avoid 'nan' in the result. Only concatenate non-NaN values.
+    df["AgencyRef1"] = df.apply(
+        lambda row: ",".join(
+            filter(pd.notnull, [row[col] for col in agency_ref_columns_dfinter])
+        ),
+        axis=1,
+    )
+    return df.drop(columns=agency_ref_columns_dfinter, errors="ignore")
+
+
 def my_union(df1, df2):
     merged = []
+    # An STRtree spatial index is created for df2 to efficiently find geometries in df2 that intersect with geometries in df1.
+    # The .query() method of the STRtree is used with the intersects predicate to find pairs of intersecting geometries between df1 and df2. The indices of intersecting geometries are stored in left and right.
 
     tree = shapely.STRtree(df2.geometry.values)
     left, right = tree.query(df1.geometry.values, predicate="intersects")
 
     if len(left):
-        # pairs = (
-        #     df1.take(left)
-        #     .join(pd.DataFrame({"index_right": right}, index=df1.index.values.take(left)))
-        #     .join(
-        #         df2.rename(columns={"geometry": "geom_right"}),
-        #         on="index_right",
-        #         rsuffix="_2",
-        #     )
-        # )
+
+        # For each pair of intersecting geometries, a DataFrame is constructed that combines information from both df1 and df2, including their geometries.
         pairs = pd.concat(
             [
                 df1.take(left),
@@ -241,20 +250,20 @@ def my_union(df1, df2):
             ],
             axis=1,
         ).join(
-            df2.rename(columns={"geometry": "geom_right"}),
+            df2.rename(columns={"geometry": "geom_right"}).reset_index(drop=True),
             on="index_right",
             rsuffix="_2",
         )
+        # For each pair of intersecting geometries, the actual intersection geometry is computed and stored in a new column, replacing the original geometry from df1. Other related columns are prepared for the merged output.
         intersections = pairs.copy()
         intersections["geometry"] = shapely.intersection(
             intersections.geometry.values, intersections.geom_right.values
         )
         intersections = intersections.drop(columns=["index_right", "geom_right"])
-        merged.append(intersections)
+        merged.append(clean_names(intersections))
 
-        # aggregate areas in right by unique values of left, then use those to clip
-        # areas out of left
-        s = gpd.GeoDataFrame(
+        # The geometries from df1 that intersect with any geometry from df2 are "clipped" by removing the intersecting parts, essentially performing a geometric difference operation. This results in geometries from df1 excluding the parts that overlap with df2.
+        clip_left = gpd.GeoDataFrame(
             pairs.groupby(level=0).agg(
                 {
                     "geom_right": lambda g: shapely.union_all(g) if len(g) > 1 else g,
@@ -272,8 +281,8 @@ def my_union(df1, df2):
             clip_left.geometry.values, clip_left.geom_right.values
         )
         clip_left = clip_left.drop(columns=["geom_right"])
-        merged.append(clip_left)
-
+        merged.append(clean_names(clip_left))
+        # Similarly, geometries from df2 that intersect with df1 are clipped by removing the intersecting parts.
         clip_right = (
             gpd.GeoDataFrame(
                 pairs.rename(
@@ -303,11 +312,12 @@ def my_union(df1, df2):
             clip_right.geometry.values, clip_right.geom_left.values
         )
         clip_right = clip_right.drop(columns=["geom_left"])
-        merged.append(clip_right)
 
-    # add any from left or right data frames that did not intersect
+        merged.append(clean_names(clip_right))
+
+    # Any geometries from df1 and df2 that did not intersect with any geometry from the other DataFrame are identified and prepared to be included in the merged output without modification.
     diff_left = df1.take(np.setdiff1d(np.arange(len(df1)), left))
-    merged.append(diff_left)
+    merged.append(clean_names(diff_left))
 
     diff_right = df2.take(np.setdiff1d(np.arange(len(df2)), right)).rename(
         columns={
@@ -315,31 +325,21 @@ def my_union(df1, df2):
             for c in df2.columns
         }
     )
-    merged.append(diff_right)
+    merged.append(clean_names(diff_right))
 
     # merge all data frames
     merged = pd.concat(merged, ignore_index=True)
+
+    # push geometry column to the end
+    merged = merged.reindex(
+        columns=[c for c in merged.columns if c != "geometry"] + ["geometry"]
+    )
+
+    # reset geometry column
+    # merged = merged.set_geometry("geometry")
+    # drop all empty geometries
+    merged = merged[merged.is_valid]
     return merged
-    # # Create a list of all columns that start with "AgencyRef1_"
-    # agency_ref_columns_dfinter = [
-    #     col for col in merged.columns if col.startswith("AgencyRef1_")
-    # ]
-
-    # # Step 1: Combine AgencyRef1_1 and AgencyRef1_2 into a single column AgencyRef1
-    # # Handle NaN values to avoid 'nan' in the result. Only concatenate non-NaN values.
-    # merged["AgencyRef1"] = merged.apply(
-    #     lambda row: ",".join(
-    #         filter(pd.notnull, [row[col] for col in agency_ref_columns_dfinter])
-    #     ),
-    #     axis=1,
-    # )
-    # merged = merged.drop(columns=agency_ref_columns_dfinter)
-
-    # # push geometry column to the end
-    # merged = merged.reindex(
-    #     columns=[c for c in merged.columns if c != "geometry"] + ["geometry"]
-    # )
-    # return merged
 
 
 # %%
@@ -353,6 +353,14 @@ for index, row in gdf.iterrows():
     if index == gdf.index[0]:
         unioned = row_gdf.copy()
     else:
-        unioned = my_union(unioned, row_gdf)  # Union the GeoDataFrames
+        # plot unioned and row_gdf on same plot
+        plot_unioned = unioned.plot(alpha=0.5, edgecolor="k")
+        row_gdf.plot(ax=plot_unioned, alpha=0.5, color="red")
+        plot_unioned.figure.show()
+        unioned = my_union(
+            unioned, row_gdf.reset_index(drop=True)
+        )  # Union the GeoDataFrames
 
+# %%
+unioned.explore()
 # %%
