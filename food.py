@@ -70,6 +70,7 @@ gdf = drive_hours[drive_hours["Weekend_AM_y"] == 1]
 # gdf = gdf.explode()
 gdf = gdf[gdf["geometry"].geom_type.isin(["Polygon", "MultiPolygon"])]
 gdf.to_crs("epsg:32618", inplace=True)
+gdf["geometry"] = gdf.geometry.make_valid()
 gdf.head()
 gdf.explore()
 
@@ -206,6 +207,10 @@ amap = dissolved_unioned.explore(
 # amap
 # %%
 amap.save("./data/Weekend_AM_y.html")
+
+
+#######################################################################
+########################################################################
 # %%https://github.com/geopandas/geopandas/issues/2792
 import shapely
 import numpy as np
@@ -214,18 +219,24 @@ import numpy as np
 def clean_names(df):
     # Create a list of all columns that start with "AgencyRef1_"
     agency_ref_columns_dfinter = [
-        col for col in df.columns if col.startswith("AgencyRef1_")
+        col for col in df.columns if col.startswith("AgencyRef1")
     ]
 
     # Step 1: Combine AgencyRef1_1 and AgencyRef1_2 into a single column AgencyRef1
     # Handle NaN values to avoid 'nan' in the result. Only concatenate non-NaN values.
     df["AgencyRef1"] = df.apply(
         lambda row: ",".join(
-            filter(pd.notnull, [row[col] for col in agency_ref_columns_dfinter])
+            filter(
+                pd.notnull,
+                [row[col] for col in agency_ref_columns_dfinter],
+            )
         ),
         axis=1,
     )
-    return df.drop(columns=agency_ref_columns_dfinter, errors="ignore")
+    return df.drop(
+        columns=[item for item in agency_ref_columns_dfinter if item != "AgencyRef1"],
+        errors="ignore",
+    )
 
 
 def my_union(df1, df2):
@@ -353,14 +364,38 @@ for index, row in gdf.iterrows():
     if index == gdf.index[0]:
         unioned = row_gdf.copy()
     else:
-        # plot unioned and row_gdf on same plot
-        plot_unioned = unioned.plot(alpha=0.5, edgecolor="k")
-        row_gdf.plot(ax=plot_unioned, alpha=0.5, color="red")
-        plot_unioned.figure.show()
-        unioned = my_union(
-            unioned, row_gdf.reset_index(drop=True)
-        )  # Union the GeoDataFrames
+        unioned = unioned[unioned.is_valid]
+        try:
+            unioned = my_union(
+                unioned, row_gdf.reset_index(drop=True)
+            )  # Union the GeoDataFrames
+        except Exception as e:
+            print(f"Caught a topology exception {e} ")
+            pass
+
+# Create a new column 'AgencyRefCount' to count the comma-delimited strings in 'AgencyRef1'
+unioned["AgencyRefCount"] = unioned["AgencyRef1"].str.count(",") + 1
+unioned = unioned[unioned.is_valid & ~unioned.is_empty]
+dissolved_unioned = unioned.dissolve(by="AgencyRefCount", as_index=False)
+
 
 # %%
-unioned.explore()
+amap = dissolved_unioned.explore(
+    column="AgencyRefCount",
+    # scheme="EqualInterval",
+    # k=1,
+    legend_kwds={"caption": "Number of Partner Organizations Weekend_AM_y"},
+    style_kwds={
+        "fillOpacity": 0.75
+    },  # Adjust opacity here; 0 is fully transparent, 1 is fully opaque
+    tooltip="AgencyRefCount",
+)
+# amap
+# %%
+amap
+# %%
+amap.save("./data/Weekend_AM_y.html")
+
+# %%
+amap
 # %%
