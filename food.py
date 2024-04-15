@@ -182,6 +182,10 @@ for index, row in gdf.iterrows():
     else:
         unioned = overlay_union(unioned, row_gdf)  # Union the GeoDataFrames
 
+# %% write out file to shapefile
+unioned.to_file("./data/unioned.shp")
+
+
 # %%
 unioned.explore()
 
