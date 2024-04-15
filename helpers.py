@@ -1,3 +1,9 @@
+import geopandas as gpd
+import shapely
+import pandas as pd
+import numpy as np
+
+
 def clean_names(df):
     # Create a list of all columns that start with "AgencyRef1_"
     agency_ref_columns_dfinter = [
@@ -21,7 +27,21 @@ def clean_names(df):
     )
 
 
-# based on https://github.com/geopandas/geopandas/issues/2792
+def extract_polygons(geom):
+    # Check if the geometry is 'Polygon' or 'MultiPolygon' and return it directly
+    if geom.geom_type in ["Polygon", "MultiPolygon"]:
+        return geom
+    # If the geometry is a 'GeometryCollection', extract Polygons and MultiPolygons
+    elif geom.geom_type == "GeometryCollection":
+        # Use the 'geoms' property to iterate over individual geometries
+        polygons = [
+            part for part in geom.geoms if part.geom_type in ["Polygon", "MultiPolygon"]
+        ]
+        # If there are any Polygons or MultiPolygons, return their union. Otherwise, return None.
+        if polygons:
+            return gpd.GeoSeries(polygons).unary_union
+    # Return None for non-polygonal geometries
+    return None
 
 
 def my_union(df1, df2):

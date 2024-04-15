@@ -19,7 +19,7 @@ print(drivepoly.shape)
 drivepoly.head()
 
 # %%
-drivepoly.explore(column="FacilityOID")
+# drivepoly.explore(column="FacilityOID")
 
 # %%
 import pandas as pd
@@ -62,9 +62,10 @@ gdf = gdf[gdf["geometry"].geom_type.isin(["Polygon", "MultiPolygon"])]
 gdf.to_crs("epsg:32618", inplace=True)
 gdf["geometry"] = gdf.geometry.make_valid()
 gdf.head()
-gdf.explore()
+# gdf.explore()
 
 # %% union of polygons counting overlapping areas
+
 for index, row in gdf.iterrows():
     print("INDEX:", index)
     # Assuming gdf.geometry.name is correctly pointing to the geometry column.
@@ -75,6 +76,9 @@ for index, row in gdf.iterrows():
     if index == gdf.index[0]:
         unioned = row_gdf.copy()
     else:
+        # keep only polygons drop lines and points
+        unioned["geometry"] = unioned["geometry"].apply(extract_polygons)
+        # check validity
         unioned = unioned[unioned.is_valid]
         try:
             unioned = my_union(
