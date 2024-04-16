@@ -73,6 +73,9 @@ for index, row in gdf.iterrows():
     row_gdf = gpd.GeoDataFrame(
         row_df[["AgencyRef1", "geometry"]], geometry=row_df.geometry.name, crs=gdf.crs
     )
+    # keep only polygons drop lines and points
+    row_gdf["geometry"] = row_gdf["geometry"].apply(extract_polygons)
+
     if index == gdf.index[0]:
         unioned = row_gdf.copy()
     else:
@@ -91,7 +94,9 @@ for index, row in gdf.iterrows():
 # Create a new column 'AgencyRefCount' to count the comma-delimited strings in 'AgencyRef1'
 unioned["AgencyRefCount"] = unioned["AgencyRef1"].str.count(",") + 1
 unioned = unioned[unioned.is_valid & ~unioned.is_empty]
+
 dissolved_unioned = unioned.dissolve(by="AgencyRefCount", as_index=False)
+dissolved_unioned["geometry"] = dissolved_unioned["geometry"].apply(extract_polygons)
 
 # %% write out file to shapefile
 dissolved_unioned.to_file("./data/weekend_am_Y.shp")
