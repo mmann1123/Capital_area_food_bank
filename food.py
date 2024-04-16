@@ -12,17 +12,14 @@
 # %%
 import geopandas as gpd
 from helpers import *
+import pandas as pd
 
 drivepoly = gpd.read_file("./data/2023_CAFB_15_Minute_Drive_Areas.geojson")
 
-print(drivepoly.shape)
-drivepoly.head()
+# change this to match the column name in the availability dataframe
+time_period_flag_name = "Weekend_AM_y"
 
 # %%
-# drivepoly.explore(column="FacilityOID")
-
-# %%
-import pandas as pd
 
 availability = pd.read_csv("./data/Agency Data.csv")
 print(availability.shape)
@@ -48,14 +45,14 @@ drive_hours.head()
 
 
 # %% count missing with weekday in column
-drive_hours["Weekend_AM_y"].isna().sum()
+drive_hours[time_period_flag_name].isna().sum()
 # %%
-drive_hours["Weekend_PM_y"].isna().sum()
+drive_hours[time_period_flag_name].isna().sum()
 
 
 # %%  Clean, project data
-# select only rows with weekend_am_y == 1
-gdf = drive_hours[drive_hours["Weekend_AM_y"] == 1]
+# select only rows with time_period_flag_name == 1
+gdf = drive_hours[drive_hours[time_period_flag_name] == 1]
 # keep only polygon and multipolygon geometries
 
 gdf = gdf[gdf["geometry"].geom_type.isin(["Polygon", "MultiPolygon"])]
