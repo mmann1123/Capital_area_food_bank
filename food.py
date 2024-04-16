@@ -96,7 +96,7 @@ dissolved_unioned = unioned.dissolve(by="AgencyRefCount", as_index=False)
 dissolved_unioned["geometry"] = dissolved_unioned["geometry"].apply(extract_polygons)
 
 # %% write out file to shapefile
-dissolved_unioned.to_file("./data/weekend_am_Y.shp")
+dissolved_unioned.to_file(f"./data/{time_period_flag_name}.shp")
 
 
 # %%
@@ -114,4 +114,4 @@ amap = dissolved_unioned.explore(
 # %%
 amap
 # %%
-amap.save("./data/Weekend_AM_y.html")
+amap.save(f"./data/{time_period_flag_name}.html")
